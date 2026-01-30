@@ -130,10 +130,6 @@ def _format_preview(content: str, merged_ranges: list[tuple[int, int]],
         range_content = content[char_start:char_end]
 
         preview_parts.append(f"[Characters {display_start}-{display_end}]")
-        if scope_flag == "--scope":
-            preview_parts.append(f"To read this part add: --scope {display_start} {display_end}")
-        else:
-            preview_parts.append(f"To read this section: reader {display_path} -s {display_start} {display_end}")
         preview_parts.append('')
         prefix = '...\n' if char_start > 0 else ''
         suffix = '\n...' if char_end < len(content) else ''

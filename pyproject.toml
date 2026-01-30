@@ -5,7 +5,8 @@ description = "A command-line tool for reading long documents (markdown, LaTeX, 
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31.0",
-    "mcp>=1.0.0"
+    "mcp>=1.0.0",
+    "mineru[all]>=2.7.4",
 ]
 
 [project.scripts]

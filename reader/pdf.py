@@ -1,13 +1,14 @@
 """
-PDF processing module for converting PDFs to markdown using SuperReader API.
+PDF processing module for converting PDFs to markdown using MinerU.
 """
 
 import os
 import json
 import hashlib
+import subprocess
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
-import requests
 
 
 def get_pdf_cache_path(pdf_path: str) -> Path:
@@ -22,10 +23,10 @@ def get_pdf_cache_path(pdf_path: str) -> Path:
     """
     pdf_file = Path(pdf_path).resolve()
     pdf_dir = pdf_file.parent
-    cache_dir = pdf_dir / '.reader'
+    cache_dir = pdf_dir / '.reader' / pdf_file.stem
 
     # Create cache directory if it doesn't exist
-    cache_dir.mkdir(exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Use the PDF filename (without extension) for the cached markdown
     cached_file = cache_dir / f"{pdf_file.stem}.md"
@@ -82,21 +83,13 @@ def is_cache_valid(pdf_path: str, cache_path: Path) -> bool:
 
 def pdf_to_markdown(
     pdf_path: str,
-    base_url: str = "https://worker.treer.ai",
-    parse_formula: bool = True,
-    parse_table: bool = True,
-    parse_ocr: bool = True,
     force_refresh: bool = False
 ) -> str:
     """
-    Convert a PDF to markdown, using cache if available.
+    Convert a PDF to markdown using MinerU, using cache if available.
 
     Args:
         pdf_path: Path to the PDF file
-        base_url: Base URL of the SuperReader API
-        parse_formula: Whether to parse formulas
-        parse_table: Whether to parse tables
-        parse_ocr: Whether to use OCR
         force_refresh: Force refresh the cache
 
     Returns:
@@ -108,54 +101,101 @@ def pdf_to_markdown(
     if not force_refresh and is_cache_valid(pdf_path, cache_path):
         return str(cache_path)
 
-    # Convert PDF to markdown using SuperReader API
-    print(f"Converting PDF to markdown: {Path(pdf_path).name}")
+    # Convert PDF to markdown using MinerU
+    pdf_file = Path(pdf_path).resolve()
+    pdf_dir = pdf_file.parent
+    print(f"Converting PDF to markdown: {pdf_file.name}")
     print("This may take a moment...")
 
-    endpoint = f"{base_url}/pdf_to_markdown"
-
     try:
-        with open(pdf_path, 'rb') as f:
-            files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-            data = {
-                'parse_formula': str(parse_formula).lower(),
-                'parse_table': str(parse_table).lower(),
-                'parse_ocr': str(parse_ocr).lower()
-            }
+        # Use a temp directory in .reader for mineru output
+        temp_output_dir = pdf_dir / '.reader' / f".temp_{pdf_file.stem}"
+        temp_output_dir.mkdir(parents=True, exist_ok=True)
 
-            response = requests.post(endpoint, files=files, data=data)
-            response.raise_for_status()
+        # Run mineru command
+        cmd = ["mineru", "-p", str(pdf_file), "-o", str(temp_output_dir)]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
 
-            result = response.json()
-            markdown_content = result.get('markdown', '')
+        # Find the generated markdown file
+        # MinerU typically creates a subdirectory with the PDF name
+        pdf_stem = pdf_file.stem
+        possible_paths = [
+            temp_output_dir / pdf_stem / f"{pdf_stem}.md",
+            temp_output_dir / f"{pdf_stem}.md",
+            temp_output_dir / "output.md",
+        ]
 
-            if not markdown_content:
-                raise ValueError("No markdown content returned from API")
+        # Also search for any .md files in the output directory
+        markdown_files = list(temp_output_dir.rglob("*.md"))
 
-            # Save to cache
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                f.write(markdown_content)
+        markdown_file = None
+        source_dir = None
+        for path in possible_paths:
+            if path.exists():
+                markdown_file = path
+                source_dir = path.parent
+                break
 
-            # Save metadata
-            metadata = {
-                'pdf_hash': get_pdf_hash(pdf_path),
-                'pdf_path': str(Path(pdf_path).resolve()),
-                'parse_formula': parse_formula,
-                'parse_table': parse_table,
-                'parse_ocr': parse_ocr,
-                'api_version': result.get('version', 'unknown')
-            }
+        # If not found in expected locations, use the most recently created .md file
+        if not markdown_file and markdown_files:
+            markdown_file = max(markdown_files, key=lambda p: p.stat().st_mtime)
+            source_dir = markdown_file.parent
 
-            metadata_path = cache_path.with_suffix('.meta.json')
-            with open(metadata_path, 'w') as f:
-                json.dump(metadata, f, indent=2)
+        if not markdown_file or not markdown_file.exists():
+            raise FileNotFoundError(
+                f"Could not find generated markdown file in {temp_output_dir}"
+            )
 
-            print(f"✓ Markdown saved to: {cache_path}")
+        # Get the cache directory (parent of cache_path)
+        cache_dir = cache_path.parent
 
-            return str(cache_path)
+        # Copy the markdown file to cache
+        shutil.copy2(markdown_file, cache_path)
 
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Error calling SuperReader API: {e}")
+        # Copy all associated files (images, etc.) to the cache directory
+        # This ensures image references in the markdown work correctly
+        for item in source_dir.iterdir():
+            if item.is_file() and item != markdown_file:
+                # Copy other files (images, etc.)
+                dest_file = cache_dir / item.name
+                shutil.copy2(item, dest_file)
+            elif item.is_dir():
+                # Copy directories (like images folder)
+                dest_dir = cache_dir / item.name
+                if dest_dir.exists():
+                    shutil.rmtree(dest_dir)
+                shutil.copytree(item, dest_dir)
+
+        # Clean up temp directory
+        shutil.rmtree(temp_output_dir)
+
+        # Save metadata
+        metadata = {
+            'pdf_hash': get_pdf_hash(pdf_path),
+            'pdf_path': str(pdf_file),
+            'cache_dir': str(cache_dir),
+            'converter': 'mineru'
+        }
+
+        metadata_path = cache_path.with_suffix('.meta.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        print(f"✓ Markdown saved to: {cache_path}")
+
+        return str(cache_path)
+
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Error running mineru command: {e}\n"
+            f"stdout: {e.stdout}\n"
+            f"stderr: {e.stderr}"
+        )
     except Exception as e:
         raise RuntimeError(f"Error converting PDF: {e}")
 
