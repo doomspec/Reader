@@ -5,7 +5,8 @@ Command-line interface for the reader tool.
 import sys
 import argparse
 from pathlib import Path
-from .preview import generate_preview, read_scope, find_in_document
+from .preview import generate_preview, read_scope
+from reader.find_in_document import find_in_document
 from .pdf import get_or_convert_pdf
 
 

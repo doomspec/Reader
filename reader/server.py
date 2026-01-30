@@ -10,7 +10,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-from .preview import generate_preview, read_scope, find_in_document
+from .preview import generate_preview, read_scope
+from reader.find_in_document import find_in_document
 from .pdf import get_or_convert_pdf
 
 

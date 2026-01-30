@@ -7,8 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-range_size = (-50, 1000)  # (chars before, chars after) for context
-
+initial_range_size = (-50, 1000)  # (chars before, chars after) for context
+min_chars = 1000 * 10
+max_chars = 3000 * 10
 
 @dataclass
 class KeyPosition:
@@ -19,6 +20,127 @@ class KeyPosition:
     content: str
     char_start: int
     char_end: int
+
+
+def _adjust_range_size(current_preview_len: int, current_range: tuple[int, int],
+                       content_len: int) -> tuple[int, int] | None:
+    """
+    Adjust range size based on current preview length.
+
+    Args:
+        current_preview_len: Length of the current preview
+        current_range: Current (chars_before, chars_after) as (negative, positive)
+        content_len: Total length of the content
+
+    Returns:
+        New range size or None if we should stop (range covers whole document)
+    """
+    chars_before = abs(current_range[0])
+    chars_after = current_range[1]
+
+    # Check if range already covers the whole document
+    if chars_before >= content_len and chars_after >= content_len:
+        return None
+
+    if current_preview_len < min_chars:
+        # Need to expand - estimate step size
+        gap = min_chars - current_preview_len
+        # Estimate: increase proportionally to the gap
+        avg_range = (chars_before + chars_after) / 2
+        if avg_range > 0 and current_preview_len > 0:
+            # Step = gap / current_len * avg_range * safety_factor
+            step = int((gap / current_preview_len) * avg_range * 0.5)
+            step = max(step, 100)  # Minimum step
+        else:
+            step = 500  # Default step if we can't estimate
+
+        new_before = min(chars_before + step, content_len)
+        new_after = min(chars_after + step, content_len)
+        return (-new_before, new_after)
+
+    elif current_preview_len > max_chars:
+        # Need to shrink - estimate step size
+        gap = current_preview_len - max_chars
+        avg_range = (chars_before + chars_after) / 2
+        if avg_range > 0 and current_preview_len > 0:
+            # Step = gap / current_len * avg_range * safety_factor
+            step = int((gap / current_preview_len) * avg_range * 0.5)
+            step = max(step, 50)  # Minimum step
+        else:
+            step = 200  # Default step
+
+        new_before = max(chars_before - step, 10)  # Keep minimum context
+        new_after = max(chars_after - step, 50)
+        return (-new_before, new_after)
+
+    return current_range  # Size is good
+
+
+def _generate_merged_ranges(content: str, key_positions: list[KeyPosition],
+                            range_size: tuple[int, int]) -> list[tuple[int, int]]:
+    """
+    Generate merged character ranges for preview.
+
+    Args:
+        content: The document content
+        key_positions: List of key positions found in the document
+        range_size: (chars_before, chars_after) tuple
+
+    Returns:
+        List of merged (start_char, end_char) tuples
+    """
+    merged_ranges: list[tuple[int, int]] = []
+    chars_before = abs(range_size[0])
+    chars_after = range_size[1]
+
+    for pos in key_positions:
+        context_start_char = max(0, pos.char_start - chars_before)
+        context_end_char = min(len(content), pos.char_end + chars_after)
+
+        if merged_ranges and context_start_char <= merged_ranges[-1][1]:
+            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], context_end_char))
+        else:
+            merged_ranges.append((context_start_char, context_end_char))
+
+    return merged_ranges
+
+
+def _format_preview(content: str, merged_ranges: list[tuple[int, int]],
+                   filepath: str, original_filepath: str | None = None,
+                   scope_flag: str = "--scope") -> str:
+    """
+    Format the preview output from merged ranges.
+
+    Args:
+        content: The document content
+        merged_ranges: List of (start_char, end_char) tuples
+        filepath: Path to the file
+        original_filepath: Original file path for display
+        scope_flag: Flag to use in scope command
+
+    Returns:
+        Formatted preview string
+    """
+    preview_parts: list[str] = []
+    display_path = os.path.relpath(original_filepath if original_filepath else filepath)
+
+    for char_start, char_end in merged_ranges:
+        display_start = char_start + 1
+        display_end = char_end
+        range_content = content[char_start:char_end]
+
+        preview_parts.append(f"[Characters {display_start}-{display_end}]")
+        if scope_flag == "--scope":
+            preview_parts.append(f"To read this part add: --scope {display_start} {display_end}")
+        else:
+            preview_parts.append(f"To read this section: reader {display_path} -s {display_start} {display_end}")
+        preview_parts.append('')
+        prefix = '...\n' if char_start > 0 else ''
+        suffix = '\n...' if char_end < len(content) else ''
+        preview_parts.append(prefix + range_content + suffix)
+        preview_parts.append('\n---\n')
+
+    return '\n'.join(preview_parts)
 
 
 def markdown_to_preview(content: str, filepath: str, original_filepath: str | None = None) -> str:
@@ -71,43 +193,30 @@ def markdown_to_preview(content: str, filepath: str, original_filepath: str | No
                     ))
                     break
 
-    # Generate preview using character-based ranges
-    preview_parts: list[str] = []
-    merged_ranges: list[tuple[int, int]] = []  # Character ranges
+    # Adaptive range sizing
+    current_range = initial_range_size
+    max_iterations = 20  # Prevent infinite loops
 
-    chars_before = abs(range_size[0])
-    chars_after = range_size[1]
+    for iteration in range(max_iterations):
+        merged_ranges = _generate_merged_ranges(content, key_positions, current_range)
+        preview = _format_preview(content, merged_ranges, filepath, original_filepath, "--scope")
+        preview_len = len(preview)
 
-    for pos in key_positions:
-        # Calculate character range with context
-        context_start_char = max(0, pos.char_start - chars_before)
-        context_end_char = min(len(content), pos.char_end + chars_after)
+        # Check if size is acceptable
+        if min_chars <= preview_len <= max_chars:
+            return preview
 
-        # Merge overlapping ranges
-        if merged_ranges and context_start_char <= merged_ranges[-1][1]:
-            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], context_end_char))
-        else:
-            merged_ranges.append((context_start_char, context_end_char))
+        # Adjust range size
+        new_range = _adjust_range_size(preview_len, current_range, len(content))
 
-    # Display merged character ranges
-    display_path = os.path.relpath(original_filepath if original_filepath else filepath)
-    for char_start, char_end in merged_ranges:
-        # Convert to 1-indexed for display
-        display_start = char_start + 1
-        display_end = char_end
+        # If no adjustment possible, return current preview
+        if new_range is None or new_range == current_range:
+            return preview
 
-        # Extract the text content for this range
-        range_content = content[char_start:char_end]
+        current_range = new_range
 
-        preview_parts.append(f"[Characters {display_start}-{display_end}]")
-        preview_parts.append(f"To read this part add: --scope {display_start} {display_end}")
-        preview_parts.append('')
-        prefix = '...\n' if char_start > 0 else ''
-        suffix = '\n...' if char_end < len(content) else ''
-        preview_parts.append(prefix + range_content + suffix)
-        preview_parts.append('\n---\n')
-
-    return '\n'.join(preview_parts)
+    # Max iterations reached, return last preview
+    return preview
 
 
 def latex_to_preview(content: str, filepath: str, original_filepath: str | None = None) -> str:
@@ -165,43 +274,33 @@ def latex_to_preview(content: str, filepath: str, original_filepath: str | None 
                         ))
                         break
 
-    # Generate preview using character-based ranges
-    preview_parts: list[str] = []
-    merged_ranges: list[tuple[int, int]] = []  # Character ranges
+    # Adaptive range sizing
+    current_range = initial_range_size
+    max_iterations = 20  # Prevent infinite loops
 
-    chars_before = abs(range_size[0])
-    chars_after = range_size[1]
+    for iteration in range(max_iterations):
+        merged_ranges = _generate_merged_ranges(content, key_positions, current_range)
 
-    for pos in key_positions:
-        # Calculate character range with context
-        context_start_char = max(0, pos.char_start - chars_before)
-        context_end_char = min(len(content), pos.char_end + chars_after)
+        # Format with different scope flag for LaTeX
+        display_path = os.path.relpath(original_filepath if original_filepath else filepath)
+        preview = _format_preview(content, merged_ranges, filepath, original_filepath, "-s")
+        preview_len = len(preview)
 
-        # Merge overlapping ranges
-        if merged_ranges and context_start_char <= merged_ranges[-1][1]:
-            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], context_end_char))
-        else:
-            merged_ranges.append((context_start_char, context_end_char))
+        # Check if size is acceptable
+        if min_chars <= preview_len <= max_chars:
+            return preview
 
-    # Display merged character ranges
-    display_path = os.path.relpath(original_filepath if original_filepath else filepath)
-    for char_start, char_end in merged_ranges:
-        # Convert to 1-indexed for display
-        display_start = char_start + 1
-        display_end = char_end
+        # Adjust range size
+        new_range = _adjust_range_size(preview_len, current_range, len(content))
 
-        # Extract the text content for this range
-        range_content = content[char_start:char_end]
+        # If no adjustment possible, return current preview
+        if new_range is None or new_range == current_range:
+            return preview
 
-        preview_parts.append(f"[Characters {display_start}-{display_end}]")
-        preview_parts.append(f"To read this section: reader {display_path} -s {display_start} {display_end}")
-        preview_parts.append('')
-        prefix = '...\n' if char_start > 0 else ''
-        suffix = '\n...' if char_end < len(content) else ''
-        preview_parts.append(prefix + range_content + suffix)
-        preview_parts.append('\n---\n')
+        current_range = new_range
 
-    return '\n'.join(preview_parts)
+    # Max iterations reached, return last preview
+    return preview
 
 
 def generate_preview(filepath: str) -> str:
@@ -254,79 +353,3 @@ def read_scope(filepath: str, start_char: int, end_char: int) -> str:
     return result
 
 
-def find_in_document(filepath: str, pattern: str, original_filepath: str | None = None, max_matches: int = 20, context_before: int | None = None, context_after: int | None = None) -> str:
-    """
-    Find regex pattern matches in the document and return context around each match.
-
-    Args:
-        filepath: Path to the document file
-        pattern: Regex pattern to search for
-        original_filepath: Original file path (e.g., PDF path) to display in output
-        max_matches: Maximum number of matches to return (default: 20)
-        context_before: Number of characters to show before each match (default: from range_size)
-        context_after: Number of characters to show after each match (default: from range_size)
-
-    Returns:
-        Text string containing matches with context and character positions
-    """
-    # Use range_size defaults if not specified
-    if context_before is None:
-        context_before = abs(range_size[0])
-    if context_after is None:
-        context_after = range_size[1]
-
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    try:
-        matches = list(re.finditer(pattern, content))
-    except re.error as e:
-        raise ValueError(f"Invalid regex pattern: {e}")
-
-    if not matches:
-        return f"No matches found for pattern: {pattern}"
-
-    # Limit to max_matches
-    matches = matches[:max_matches]
-
-    display_path = os.path.relpath(original_filepath if original_filepath else filepath)
-    if len(matches) < max_matches:
-        result_parts = [f"Found {len(matches)} match(es) (showing first {max_matches}):\n"]
-    else:
-        result_parts = [f"Found {len(matches)} matches:\n"]
-
-    for i, match in enumerate(matches, 1):
-        match_start = match.start()
-        match_end = match.end()
-
-        # Calculate context range
-        context_start = max(0, match_start - context_before)
-        context_end = min(len(content), match_end + context_after)
-
-        # Convert to 1-indexed for display
-        display_start = context_start + 1
-        display_end = context_end
-
-        # Extract context
-        context = content[context_start:context_end]
-
-        # Calculate where the match is within the context (for highlighting)
-        match_offset_in_context = match_start - context_start
-        match_length = match_end - match_start
-
-        result_parts.append(f"\n--- Match {i} [Characters {display_start}-{display_end}] ---")
-        result_parts.append(f"To read this section: reader {display_path} -s {display_start} {display_end}")
-        result_parts.append(f"Match position: characters {match_start + 1}-{match_end}\n")
-
-        # Show context with the match highlighted
-        prefix = "..." if context_start > 0 else ""
-        suffix = "..." if context_end < len(content) else ""
-
-        # Split context to highlight the match
-        before_match = context[:match_offset_in_context]
-        matched_text = context[match_offset_in_context:match_offset_in_context + match_length]
-        after_match = context[match_offset_in_context + match_length:]
-
-        result_parts.append(f"{prefix}{before_match}>>>{matched_text}<<<{after_match}{suffix}")
-
-    return '\n'.join(result_parts)
