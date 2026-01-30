@@ -43,18 +43,21 @@ def main():
                 target_dir = arg
                 break
 
-    # Look for .md and .tex files
+    # Look for .md, .tex, and .pdf files
     try:
         md_files = list(Path(target_dir).glob('*.md'))
         tex_files = list(Path(target_dir).glob('*.tex'))
+        pdf_files = list(Path(target_dir).glob('*.pdf'))
 
-        if md_files or tex_files:
+        if md_files or tex_files or pdf_files:
             print()  # Blank line for separation
-            print("You can use reader command for .md and .tex files")
+            print("You can use reader command for .md, .tex, and .pdf files")
             # Show example with first file found
-            example_file = (md_files + tex_files)[0].name
+            example_file = (md_files + tex_files + pdf_files)[0].name
             print(f"    reader {example_file}                    # Preview document")
             print(f"    reader {example_file} -s 1 50            # Read characters 1-50")
+            if pdf_files:
+                print(f"    reader {pdf_files[0].name} -f            # Force refresh PDF cache")
             print()
 
     except Exception:

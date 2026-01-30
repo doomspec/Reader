@@ -2,9 +2,12 @@
 Preview and scope reading functionality for documents.
 """
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Literal
+
+range_size = (-50, 1000)  # (chars before, chars after) for context
 
 
 @dataclass
@@ -18,17 +21,17 @@ class KeyPosition:
     char_end: int
 
 
-def markdown_to_preview(content: str, filepath: str, lines_context: int = 3) -> str:
+def markdown_to_preview(content: str, filepath: str, original_filepath: str | None = None) -> str:
     """
     Convert markdown to a preview by extracting key positions.
 
     Args:
         content: The markdown content to preview
         filepath: Path to the file being previewed
-        lines_context: Number of lines to show around each key position (default: 3)
+        original_filepath: Original file path (e.g., PDF path) to display in commands
 
     Returns:
-        Text string containing the preview with line number information
+        Text string containing the preview with character position information
     """
     lines = content.split('\n')
     key_positions: list[KeyPosition] = []
@@ -68,48 +71,56 @@ def markdown_to_preview(content: str, filepath: str, lines_context: int = 3) -> 
                     ))
                     break
 
-    # Generate preview
+    # Generate preview using character-based ranges
     preview_parts: list[str] = []
-    merged_ranges: list[tuple[int, int]] = []
+    merged_ranges: list[tuple[int, int]] = []  # Character ranges
+
+    chars_before = abs(range_size[0])
+    chars_after = range_size[1]
 
     for pos in key_positions:
-        context_start = max(1, pos.start_line - lines_context)
-        context_end = min(len(lines), pos.end_line + lines_context)
+        # Calculate character range with context
+        context_start_char = max(0, pos.char_start - chars_before)
+        context_end_char = min(len(content), pos.char_end + chars_after)
 
         # Merge overlapping ranges
-        if merged_ranges and context_start <= merged_ranges[-1][1]:
-            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], context_end))
+        if merged_ranges and context_start_char <= merged_ranges[-1][1]:
+            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], context_end_char))
         else:
-            merged_ranges.append((context_start, context_end))
+            merged_ranges.append((context_start_char, context_end_char))
 
-    # Calculate character positions for merged ranges
-    for start, end in merged_ranges:
-        # Calculate character positions for the line range
-        char_start = sum(len(lines[i]) + 1 for i in range(start - 1)) + 1
-        char_end = sum(len(lines[i]) + 1 for i in range(end))
+    # Display merged character ranges
+    display_path = os.path.relpath(original_filepath if original_filepath else filepath)
+    for char_start, char_end in merged_ranges:
+        # Convert to 1-indexed for display
+        display_start = char_start + 1
+        display_end = char_end
 
-        preview_parts.append(f"[Characters {char_start}-{char_end}]")
-        preview_parts.append(f"To read this section: reader {filepath} -s {char_start} {char_end}")
+        # Extract the text content for this range
+        range_content = content[char_start:char_end]
+
+        preview_parts.append(f"[Characters {display_start}-{display_end}]")
+        preview_parts.append(f"To read this part add: --scope {display_start} {display_end}")
         preview_parts.append('')
-        prefix = '...\n' if start > 1 else ''
-        suffix = '\n...' if end < len(lines) else ''
-        preview_parts.append(prefix + '\n'.join(lines[start-1:end]) + suffix)
+        prefix = '...\n' if char_start > 0 else ''
+        suffix = '\n...' if char_end < len(content) else ''
+        preview_parts.append(prefix + range_content + suffix)
         preview_parts.append('\n---\n')
 
     return '\n'.join(preview_parts)
 
 
-def latex_to_preview(content: str, filepath: str, lines_context: int = 3) -> str:
+def latex_to_preview(content: str, filepath: str, original_filepath: str | None = None) -> str:
     """
     Convert LaTeX to a preview by extracting key positions.
 
     Args:
         content: The LaTeX content to preview
         filepath: Path to the file being previewed
-        lines_context: Number of lines to show around each key position (default: 3)
+        original_filepath: Original file path (e.g., PDF path) to display in commands
 
     Returns:
-        Text string containing the preview with line number information
+        Text string containing the preview with character position information
     """
     lines = content.split('\n')
     key_positions: list[KeyPosition] = []
@@ -154,32 +165,40 @@ def latex_to_preview(content: str, filepath: str, lines_context: int = 3) -> str
                         ))
                         break
 
-    # Generate preview
+    # Generate preview using character-based ranges
     preview_parts: list[str] = []
-    merged_ranges: list[tuple[int, int]] = []
+    merged_ranges: list[tuple[int, int]] = []  # Character ranges
+
+    chars_before = abs(range_size[0])
+    chars_after = range_size[1]
 
     for pos in key_positions:
-        context_start = max(1, pos.start_line - lines_context)
-        context_end = min(len(lines), pos.end_line + lines_context)
+        # Calculate character range with context
+        context_start_char = max(0, pos.char_start - chars_before)
+        context_end_char = min(len(content), pos.char_end + chars_after)
 
         # Merge overlapping ranges
-        if merged_ranges and context_start <= merged_ranges[-1][1]:
-            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], context_end))
+        if merged_ranges and context_start_char <= merged_ranges[-1][1]:
+            merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], context_end_char))
         else:
-            merged_ranges.append((context_start, context_end))
+            merged_ranges.append((context_start_char, context_end_char))
 
-    # Calculate character positions for merged ranges
-    for start, end in merged_ranges:
-        # Calculate character positions for the line range
-        char_start = sum(len(lines[i]) + 1 for i in range(start - 1)) + 1
-        char_end = sum(len(lines[i]) + 1 for i in range(end))
+    # Display merged character ranges
+    display_path = os.path.relpath(original_filepath if original_filepath else filepath)
+    for char_start, char_end in merged_ranges:
+        # Convert to 1-indexed for display
+        display_start = char_start + 1
+        display_end = char_end
 
-        preview_parts.append(f"[Characters {char_start}-{char_end}]")
-        preview_parts.append(f"To read this section: reader {filepath} -s {char_start} {char_end}")
+        # Extract the text content for this range
+        range_content = content[char_start:char_end]
+
+        preview_parts.append(f"[Characters {display_start}-{display_end}]")
+        preview_parts.append(f"To read this section: reader {display_path} -s {display_start} {display_end}")
         preview_parts.append('')
-        prefix = '...\n' if start > 1 else ''
-        suffix = '\n...' if end < len(lines) else ''
-        preview_parts.append(prefix + '\n'.join(lines[start-1:end]) + suffix)
+        prefix = '...\n' if char_start > 0 else ''
+        suffix = '\n...' if char_end < len(content) else ''
+        preview_parts.append(prefix + range_content + suffix)
         preview_parts.append('\n---\n')
 
     return '\n'.join(preview_parts)
@@ -233,3 +252,81 @@ def read_scope(filepath: str, start_char: int, end_char: int) -> str:
     result = content[start_char - 1:end_char]
 
     return result
+
+
+def find_in_document(filepath: str, pattern: str, original_filepath: str | None = None, max_matches: int = 20, context_before: int | None = None, context_after: int | None = None) -> str:
+    """
+    Find regex pattern matches in the document and return context around each match.
+
+    Args:
+        filepath: Path to the document file
+        pattern: Regex pattern to search for
+        original_filepath: Original file path (e.g., PDF path) to display in output
+        max_matches: Maximum number of matches to return (default: 20)
+        context_before: Number of characters to show before each match (default: from range_size)
+        context_after: Number of characters to show after each match (default: from range_size)
+
+    Returns:
+        Text string containing matches with context and character positions
+    """
+    # Use range_size defaults if not specified
+    if context_before is None:
+        context_before = abs(range_size[0])
+    if context_after is None:
+        context_after = range_size[1]
+
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    try:
+        matches = list(re.finditer(pattern, content))
+    except re.error as e:
+        raise ValueError(f"Invalid regex pattern: {e}")
+
+    if not matches:
+        return f"No matches found for pattern: {pattern}"
+
+    # Limit to max_matches
+    matches = matches[:max_matches]
+
+    display_path = os.path.relpath(original_filepath if original_filepath else filepath)
+    if len(matches) < max_matches:
+        result_parts = [f"Found {len(matches)} match(es) (showing first {max_matches}):\n"]
+    else:
+        result_parts = [f"Found {len(matches)} matches:\n"]
+
+    for i, match in enumerate(matches, 1):
+        match_start = match.start()
+        match_end = match.end()
+
+        # Calculate context range
+        context_start = max(0, match_start - context_before)
+        context_end = min(len(content), match_end + context_after)
+
+        # Convert to 1-indexed for display
+        display_start = context_start + 1
+        display_end = context_end
+
+        # Extract context
+        context = content[context_start:context_end]
+
+        # Calculate where the match is within the context (for highlighting)
+        match_offset_in_context = match_start - context_start
+        match_length = match_end - match_start
+
+        result_parts.append(f"\n--- Match {i} [Characters {display_start}-{display_end}] ---")
+        result_parts.append(f"To read this section: reader {display_path} -s {display_start} {display_end}")
+        result_parts.append(f"Match position: characters {match_start + 1}-{match_end}\n")
+
+        # Show context with the match highlighted
+        prefix = "..." if context_start > 0 else ""
+        suffix = "..." if context_end < len(content) else ""
+
+        # Split context to highlight the match
+        before_match = context[:match_offset_in_context]
+        matched_text = context[match_offset_in_context:match_offset_in_context + match_length]
+        after_match = context[match_offset_in_context + match_length:]
+
+        result_parts.append(f"{prefix}{before_match}>>>{matched_text}<<<{after_match}{suffix}")
+
+    return '\n'.join(result_parts)

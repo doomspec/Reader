@@ -1,13 +1,17 @@
 [project]
 name = "reader"
 version = "0.1.0"
-description = "A command-line tool for reading long documents (markdown and LaTeX)"
-requires-python = ">=3.13"
-dependencies = []
+description = "A command-line tool for reading long documents (markdown, LaTeX, and PDF)"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+    "mcp>=1.0.0"
+]
 
 [project.scripts]
 reader = "reader.cli:main"
 reader-ls = "reader.ls:main"
+reader-mcp = "reader.server:run"
 
 [build-system]
 requires = ["hatchling"]
