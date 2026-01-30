@@ -5,6 +5,7 @@ Exposes reader functionality as an MCP tool that can be called by Claude and oth
 """
 
 import sys
+import time
 from pathlib import Path
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -17,6 +18,44 @@ from .pdf import get_or_convert_pdf
 
 # Create the MCP server
 app = Server("reader")
+
+
+def retry_on_5xx(func, max_retries=3, initial_delay=1.0):
+    """
+    Retry a function if it raises a 5xx error.
+
+    Args:
+        func: The function to retry (should be a callable)
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds (will be doubled after each retry)
+
+    Returns:
+        The result of the function call
+
+    Raises:
+        The last exception if all retries fail
+    """
+    delay = initial_delay
+    last_exception = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            last_exception = e
+            error_msg = str(e).lower()
+
+            # Check if this is a 5xx error
+            is_5xx = any(code in error_msg for code in ['500', '501', '502', '503', '504', '505', '506', '507', '508', '509', '510', '511'])
+
+            if is_5xx and attempt < max_retries:
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+                continue
+            else:
+                raise
+
+    raise last_exception
 
 
 @app.list_tools()
@@ -82,9 +121,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             try:
                 original_filepath = str(filepath)
                 force_refresh = arguments.get("force_refresh", False)
-                working_filepath = get_or_convert_pdf(
-                    str(filepath),
-                    force_refresh=force_refresh
+                working_filepath = retry_on_5xx(
+                    lambda: get_or_convert_pdf(
+                        str(filepath),
+                        force_refresh=force_refresh
+                    )
                 )
             except Exception as e:
                 raise ValueError(f"Error processing PDF: {e}")
